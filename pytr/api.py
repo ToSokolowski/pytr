@@ -34,20 +34,30 @@ import urllib.parse
 import uuid
 from collections import deque
 from datetime import datetime
-from http.cookiejar import Cookie, MozillaCookieJar
+from http.cookiejar import Cookie
 from typing import Any, Dict
 
 import certifi
 import requests
 import websockets
-from curl_cffi import requests as cffi_requests
 
-from pytr.utils import get_logger
+from pytr.credential_store import (
+    CREDENTIALS_FILE,
+    EncryptedCookieJar,
+    SecretStoreError,
+    cookies_file_for,
+    legacy_cookies_file_for,
+    load_credentials,
+)
+from pytr.utils import get_logger, log_payloads, register_secret
 
-# `playwright` and `pytr.awswaf` are imported lazily inside the two
-# `_fetch_waf_token_*` methods, not here. Both are only reachable when the
+# `playwright`, `curl_cffi` and `pytr.awswaf` are imported lazily inside the two
+# `_fetch_waf_token_*` methods, not here. They are only reachable when the
 # caller asks for that specific WAF strategy, and importing them at module
 # level made every consumer pay for them unconditionally:
+#   - `curl_cffi` is an optional extra too. It ships a precompiled
+#     curl-impersonate binary that can't be reviewed like Python source, and the
+#     v2 login and the playwright strategy never touch it.
 #   - `playwright` is an optional extra (see pyproject). A module-level import
 #     makes `import pytr.api` fail outright when it is not installed, which
 #     would defeat the point of making it optional.
@@ -56,10 +66,6 @@ from pytr.utils import get_logger
 #     deployment that never selects `waf_token="awswaf"` neither performs that
 #     file IO nor carries the code in a hot import path.
 
-home = pathlib.Path.home()
-BASE_DIR = home / ".pytr"
-CREDENTIALS_FILE = BASE_DIR / "credentials"
-COOKIES_FILE = BASE_DIR / "cookies.txt"
 
 # Hosts that `_fetch_waf_token_awswaf` is allowed to talk to. The challenge
 # endpoint is scraped out of the login page with a regular expression, so
@@ -149,7 +155,6 @@ class TradeRepublicApi:
     subscriptions: Dict[str, Dict[str, Any]] = {}
 
     _credentials_file = CREDENTIALS_FILE
-    _cookies_file = COOKIES_FILE
 
     def __init__(
         self,
@@ -174,22 +179,25 @@ class TradeRepublicApi:
 
         if not (phone_no and pin):
             try:
-                with open(self._credentials_file, "r") as f:
-                    lines = f.readlines()
-                self.phone_no = lines[0].strip()
-                self.pin = lines[1].strip()
-            except FileNotFoundError:
+                credentials = load_credentials(self._credentials_file)
+            except SecretStoreError as e:
+                raise ValueError(f"Could not read the stored credentials: {e}") from None
+            if credentials is None:
                 raise ValueError(f"phone_no and pin must be specified explicitly or via {self._credentials_file}")
+            self.phone_no, self.pin = credentials
         else:
             self.phone_no = phone_no
             self.pin = pin
+        register_secret(self.phone_no)
 
-        self._cookies_file = pathlib.Path(cookies_file) if cookies_file else BASE_DIR / f"cookies.{self.phone_no}.txt"
+        self._cookies_file = pathlib.Path(cookies_file) if cookies_file else cookies_file_for(self.phone_no)
 
         self._websession = requests.Session()
         self._websession.headers = self._default_headers
         if self._save_cookies:
-            self._websession.cookies = MozillaCookieJar(self._cookies_file)
+            self._websession.cookies = EncryptedCookieJar(  # type: ignore[assignment]
+                self._cookies_file, None if cookies_file else legacy_cookies_file_for(self.phone_no)
+            )
         self._sec_acc_no: str | None = None
         # Customer id of the account the session acts for, once it is not the login's own.
         self._subject_id: str | None = None
@@ -200,6 +208,14 @@ class TradeRepublicApi:
         """
         Get the AWS WAF token, using the awswaf library.
         """
+
+        try:
+            from curl_cffi import requests as cffi_requests
+        except ImportError:
+            raise ValueError(
+                "--waf-token awswaf needs the optional extra: pip install 'pytr[awswaf]'. "
+                "Alternatively, use --v2 which does not require a WAF token."
+            ) from None
 
         from pytr.awswaf.aws import AwsWaf
 
@@ -393,7 +409,7 @@ class TradeRepublicApi:
             self.log.info("WAF token skipped.")
 
         if self._waf_token:
-            self.log.debug(f"WAF Token: {self._waf_token}")
+            register_secret(self._waf_token)
             self._set_waf_cookie(self._waf_token)
 
         login_path = "/api/v2/auth/web/login" if self._use_v2_login else "/api/v1/auth/web/login"
@@ -413,9 +429,10 @@ class TradeRepublicApi:
             raise ValueError(hint)
         r.raise_for_status()
         j = r.json()
-        self.log.debug(f"Web login data: {json.dumps(j, indent=4)}")
+        self.log.debug(f"Web login answered with the fields: {sorted(j)}")
         try:
             self._process_id = j["processId"]
+            register_secret(self._process_id)
         except KeyError:
             err = j.get("errors")
             if err:
@@ -529,10 +546,18 @@ class TradeRepublicApi:
             time.sleep(interval)
             process = self._get_weblogin_process()
 
+    def _register_cookie_secrets(self):
+        for cookie in getattr(self._websession, "cookies", None) or ():
+            register_secret(cookie.value)
+
     def save_websession(self):
+        self._register_cookie_secrets()
         if self._save_cookies:
             # Saves session cookies too (expirydate=0).
-            self._websession.cookies.save(ignore_discard=True)
+            try:
+                self._websession.cookies.save(ignore_discard=True)  # type: ignore[attr-defined]
+            except SecretStoreError as e:
+                self.log.error(f"The session was not saved, you will have to log in again next time. {e}")
 
     def resume_websession(self):
         """
@@ -542,13 +567,19 @@ class TradeRepublicApi:
         self.log.debug("Called resume_websession.")
 
         # Only attempt to resume if cookies are used and a cookie file exists.
-        if self._save_cookies is False or not self._cookies_file.exists():
+        jar = self._websession.cookies
+        if self._save_cookies is False or not jar.has_saved():  # type: ignore[attr-defined]
             return False
 
         self.log.info("Trying to resume websession...")
 
         # Loads session cookies too (expirydate=0).
-        self._websession.cookies.load(ignore_discard=True)
+        try:
+            jar.load(ignore_discard=True)  # type: ignore[attr-defined]
+        except SecretStoreError as e:
+            self.log.warning(f"Could not read the saved session: {e}")
+            jar.clear()
+            return False
 
         try:
             self.log.debug("Calling settings...")
@@ -695,7 +726,10 @@ class TradeRepublicApi:
     async def subscribe(self, payload):
         subscription_id = await self._next_subscription_id()
         ws = await self._get_ws()
-        self.log.debug(f"Subscribing: 'sub {subscription_id} {json.dumps(payload)}'")
+        if log_payloads():
+            self.log.debug(f"Subscribing: 'sub {subscription_id} {json.dumps(payload)}'")
+        else:
+            self.log.debug(f"Subscribing {subscription_id} to {payload.get('type')!r}")
         self.subscriptions[subscription_id] = payload
         await ws.send(f"sub {subscription_id} {json.dumps(payload)}")
         return subscription_id
@@ -718,7 +752,8 @@ class TradeRepublicApi:
         ws = await self._get_ws()
         while True:
             response = await ws.recv()
-            self.log.debug(f"Received message: {response!r}")
+            if log_payloads():
+                self.log.debug(f"Received message: {response!r}")
 
             subscription_id = response[: response.find(" ")]
             code = response[response.find(" ") + 1 : response.find(" ") + 2]
@@ -737,7 +772,8 @@ class TradeRepublicApi:
 
             elif code == "D":
                 response = self._calculate_delta(subscription_id, payload_str)
-                self.log.debug(f"Payload is {response}")
+                if log_payloads():
+                    self.log.debug(f"Payload is {response}")
 
                 self._previous_responses[subscription_id] = response
                 return subscription_id, subscription, json.loads(response)

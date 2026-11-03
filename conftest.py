@@ -5,7 +5,7 @@ import pytr.utils as pytr_utils
 
 @pytest.fixture(autouse=True)
 def suppress_info_logs(monkeypatch):
-    # pytr loggers call coloredlogs.install(level=log_level, ...) with propagate=False,
+    # pytr loggers install their own console handler at log_level with propagate=False,
     # bypassing pytest's capture. Setting log_level to "warning" before tests run
     # makes all subsequently created loggers install at WARNING level.
     monkeypatch.setattr(pytr_utils, "log_level", "warning")

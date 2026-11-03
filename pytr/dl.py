@@ -1,13 +1,12 @@
 import asyncio
 import json
-from concurrent.futures import Future, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal
 
 from pathvalidate import sanitize_filepath
 from requests import Response
-from requests_futures.sessions import FuturesSession  # type: ignore[import-untyped]
 
 from .event import Event
 from .timeline import Timeline
@@ -162,6 +161,17 @@ subtitle_subfolder_mapping = {
 }
 
 
+class _DownloadSession:
+    """Runs GET requests of a requests.Session on a thread pool and hands back futures."""
+
+    def __init__(self, session, max_workers):
+        self._session = session
+        self._executor = ThreadPoolExecutor(max_workers=max_workers)
+
+    def get(self, url, **kwargs) -> "Future[Response]":
+        return self._executor.submit(self._session.get, url, **kwargs)
+
+
 class DL:
     def __init__(
         self,
@@ -216,9 +226,7 @@ class DL:
             load_event_database=load_event_database,
         )
 
-        self.session = (
-            FuturesSession(max_workers=max_workers, session=self.tr._websession) if self.tr is not None else None
-        )
+        self.session = _DownloadSession(self.tr._websession, max_workers) if self.tr is not None else None
         self.futures: list[Future[Response]] = []
 
         self.events_without_docs: List[Dict[str, Any]] = []

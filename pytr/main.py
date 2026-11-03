@@ -10,8 +10,6 @@ from datetime import datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 
-import shtab
-
 from pytr.account import login, print_accounts
 from pytr.alarms import Alarms
 from pytr.details import Details
@@ -22,7 +20,7 @@ from pytr.rates import RATE_COLUMNS, Rates, parse_isin_input
 from pytr.savings_plans import SavingsPlans
 from pytr.timeline import Timeline
 from pytr.transactions import SUPPORTED_LANGUAGES, TransactionExporter
-from pytr.utils import check_version, get_logger
+from pytr.utils import get_logger
 
 
 def get_main_parser():
@@ -111,7 +109,7 @@ def get_main_parser():
     )
     parser_login_args.add_argument(
         "--store_credentials",
-        help="Store credentials (Phone number, pin, cookies) for next usage",
+        help="Store credentials (phone number, PIN, session cookies) encrypted for next usage, key in the system keyring",
         action="store_true",
         default=False,
     )
@@ -536,7 +534,13 @@ def get_main_parser():
         help=info,
         description=info,
     )
-    shtab.add_argument_to(parser_completion, "shell", parent=parser)
+    try:
+        import shtab  # type: ignore[import-not-found,unused-ignore]
+    except ImportError:
+        # Shell completion is an optional extra: pip install 'pytr[completion]'
+        parser_completion.add_argument("shell", nargs="?", help="Shell to print the completion for")
+    else:
+        shtab.add_argument_to(parser_completion, "shell", parent=parser)
     return parser
 
 
@@ -592,7 +596,10 @@ def main():
         )
     )
 
-    if args.command == "login":
+    if args.command == "completion":
+        log.error("Shell completion needs the optional extra: pip install 'pytr[completion]'")
+        sys.exit(1)
+    elif args.command == "login":
         login(
             phone_no=args.phone_no,
             pin=args.pin,
@@ -788,9 +795,8 @@ def main():
             lang=args.lang,
         ).get()
     elif args.version:
-        installed_version = version("pytr")
-        print(installed_version)
-        check_version(installed_version)
+        # No check for a newer release: that would contact GitHub on every invocation.
+        print(version("pytr"))
     else:
         if hasattr(args, "for_readme") and args.for_readme:
             parser.formatter_class = lambda prog: argparse.ArgumentDefaultsHelpFormatter(

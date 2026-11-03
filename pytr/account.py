@@ -1,23 +1,12 @@
-import json
-import os
 import sys
 import time
 from getpass import getpass
 
 import requests
-from pygments import formatters, highlight, lexers
 
-from .api import BASE_DIR, CREDENTIALS_FILE, TradeRepublicApi, account_kind, account_name
+from . import credential_store
+from .api import TradeRepublicApi, account_kind, account_name
 from .utils import get_logger
-
-
-def get_settings(tr):
-    formatted_json = json.dumps(tr.settings(), indent=2)
-    if sys.stdout.isatty():
-        colorful_json = highlight(formatted_json, lexers.JsonLexer(), formatters.TerminalFormatter())
-        return colorful_json
-    else:
-        return formatted_json
 
 
 def print_accounts(tr):
@@ -52,16 +41,18 @@ def login(phone_no=None, pin=None, store_credentials=False, waf_token="playwrigh
     log = get_logger(__name__)
     save_cookies = True
 
-    if phone_no is None and CREDENTIALS_FILE.is_file():
-        with open(CREDENTIALS_FILE) as f:
-            lines = f.readlines()
-        phone_no = lines[0].strip()
-        pin = lines[1].strip()
+    stored = None
+    if phone_no is None:
+        try:
+            stored = credential_store.load_credentials()
+        except credential_store.SecretStoreError as e:
+            log.error(f"Could not read the stored credentials: {e}")
+
+    if stored is not None:
+        phone_no, pin = stored
         phone_no_masked = phone_no[:-8] + "********"
-        pin_masked = len(pin) * "*"
-        log.info(f"Using credentials from file {CREDENTIALS_FILE}. Phone: {phone_no_masked}, PIN: {pin_masked}")
+        log.info(f"Using the stored credentials. Phone: {phone_no_masked}")
     else:
-        BASE_DIR.mkdir(parents=True, exist_ok=True)
         if phone_no is None:
             print("Please enter your TradeRepublic phone number in the format +4912345678:")
             phone_no = input()
@@ -71,11 +62,12 @@ def login(phone_no=None, pin=None, store_credentials=False, waf_token="playwrigh
             pin = getpass(prompt="Pin (Input is hidden):")
 
         if store_credentials:
-            with open(CREDENTIALS_FILE, "w") as f:
-                f.writelines([phone_no + "\n", pin + "\n"])
-            os.chmod(CREDENTIALS_FILE, 0o600)
-
-            log.info(f"Storing credentials/cookies in {BASE_DIR}")
+            try:
+                credential_store.store_credentials(phone_no, pin)
+                log.info(f"Stored the credentials encrypted in {credential_store.BASE_DIR}, key in the system keyring")
+            except credential_store.SecretStoreError as e:
+                log.error(f"Credentials and session are not stored: {e}")
+                save_cookies = False
         else:
             save_cookies = False
 
@@ -113,7 +105,8 @@ def login(phone_no=None, pin=None, store_credentials=False, waf_token="playwrigh
         tr.complete_weblogin(code)
         log.info("Logged in.")
 
-    log.debug(get_settings(tr))
+    # Also proves the session works. The settings themselves are personal data and stay out of the log.
+    tr.settings()
 
     if account is not None:
         try:

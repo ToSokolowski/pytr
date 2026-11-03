@@ -383,3 +383,25 @@ def test_settings_stays_on_v2_account_and_v1_session():
         "https://api.traderepublic.com/api/v1/auth/web/session",
         "https://api.traderepublic.com/api/v2/auth/account",
     ]
+
+
+# --- optional curl_cffi ---------------------------------------------------------------
+
+
+def test_pytr_runs_without_curl_cffi():
+    # curl_cffi ships a precompiled binary and only the awswaf strategy needs it.
+    import subprocess
+    import sys
+
+    code = "import sys; sys.modules['curl_cffi'] = None; import pytr.main, pytr.api, pytr.dl"
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_awswaf_without_curl_cffi_explains_the_extra(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "curl_cffi", None)
+    tr = TradeRepublicApi(phone_no="+490000000000", pin="0000", waf_token="awswaf", use_v2_login=False)
+
+    with pytest.raises(ValueError, match=r"pytr\[awswaf\]"):
+        tr.initiate_weblogin()

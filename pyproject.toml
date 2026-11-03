@@ -21,17 +21,15 @@ classifiers = [
     "Topic :: Office/Business :: Financial",
     "Topic :: Office/Business :: Financial :: Investment",
 ]
+# Kept deliberately short: every dependency is code that runs next to the PIN and the
+# session cookies. Exact versions and hashes are pinned in uv.lock.
 dependencies = [
     "babel",
     "certifi",
-    "coloredlogs",
     "cryptography",
-    "curl_cffi",
-    "packaging",
+    "keyring>=25",
     "pathvalidate",
-    "pygments",
-    "requests_futures",
-    "shtab",
+    "requests",
     "websockets>=14",
 ]
 
@@ -43,6 +41,14 @@ dependencies = [
 # is not challenged at all — should not have to carry the browser.
 playwright = [
     "playwright>=1.62.0",
+]
+completion = [
+    "shtab",
+]
+# Only `--waf-token awswaf` needs this. It ships a precompiled binary
+# (curl-impersonate), the one dependency whose code can't be read as source.
+awswaf = [
+    "curl_cffi",
 ]
 
 [project.scripts]
@@ -58,7 +64,6 @@ dev = [
     "mypy>=1.15.0",
     "types-babel>=2.11.0.15",
     "types-requests>=2.32.0.20241016",
-    "types-pygments>=2.19.0.20250107",
 ]
 
 [tool.ruff]
@@ -69,3 +74,8 @@ extend-select = ["I"]
 
 [tool.mypy]
 python_version = "3.10"
+
+# Optional extra, not installed in the default dev environment.
+[[tool.mypy.overrides]]
+module = ["curl_cffi", "curl_cffi.*"]
+ignore_missing_imports = true

@@ -143,5 +143,4 @@ cython_debug/
 # VSCode
 .vscode/**
 
-# uv
-uv.lock
+# uv: uv.lock is committed, it pins every dependency by hash

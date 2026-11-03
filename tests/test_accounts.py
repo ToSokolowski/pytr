@@ -8,6 +8,7 @@ import pytest
 import requests
 
 import pytr.account as account_module
+from pytr import credential_store
 from pytr.api import TradeRepublicApi
 from pytr.main import get_main_parser
 
@@ -479,8 +480,9 @@ class _LoggedIn:
 
 def _login(monkeypatch, tmp_path, tr, **kwargs):
     # login() creates the directory it stores credentials in; keep it off the real one.
-    monkeypatch.setattr(account_module, "BASE_DIR", tmp_path / "pytr")
-    monkeypatch.setattr(account_module, "CREDENTIALS_FILE", tmp_path / "pytr" / "credentials")
+    monkeypatch.setattr(credential_store, "BASE_DIR", tmp_path / "pytr")
+    monkeypatch.setattr(credential_store, "CREDENTIALS_FILE", tmp_path / "pytr" / "credentials.enc")
+    monkeypatch.setattr(credential_store, "LEGACY_CREDENTIALS_FILE", tmp_path / "pytr" / "credentials")
     monkeypatch.setattr(account_module, "TradeRepublicApi", lambda **_: tr)
     return account_module.login(phone_no="+490000000000", pin="0000", **kwargs)
 

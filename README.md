@@ -14,6 +14,7 @@ __Table of Contents__
 * [Usage](#usage)
 * [Authentication](#authentication)
   * [Web login](#web-login)
+  * [Stored credentials and session](#stored-credentials-and-session)
   * [If web login suddenly stops working](#if-web-login-suddenly-stops-working)
   * [Other accounts of your login](#other-accounts-of-your-login)
 * [Development](#development)
@@ -107,7 +108,8 @@ Web login uses the public web-login endpoints at `api.traderepublic.com`. Two va
   fallback) and enter it in the terminal. This is the original behavior; nothing changes for existing users.
   v1 requires passing an AWS WAF token with the login request; by default pytr fetches one automatically
   via Playwright (requires the optional `playwright` extra: `pip install 'pytr[playwright]' && playwright install chromium`).
-  The pure-Python alternative `--waf-token awswaf` exists but has been reported to no longer work reliably.
+  The pure-Python alternative `--waf-token awswaf` (optional extra: `pip install 'pytr[awswaf]'`) exists but has
+  been reported to no longer work reliably.
 - **v2 (opt-in)**: `pytr login --v2`. Mirrors what
   [app.traderepublic.com](https://app.traderepublic.com/) currently does. Instead of typing a four-digit code, you
   confirm the login from a push notification in the Trade Republic mobile app. Accounts secured with an authenticator
@@ -119,6 +121,26 @@ Web login uses the public web-login endpoints at `api.traderepublic.com`. Two va
 
 Both variants keep you logged in on your primary device, but you may need to re-authenticate every so often when
 running `pytr`.
+
+### Stored credentials and session
+
+`--store_credentials` keeps the phone number, PIN and session cookies for the next run. Nothing of that is
+written in plain text: a random key is kept in the system keyring (GNOME Keyring / KWallet via Secret Service on
+Linux, Keychain on macOS, Credential Manager on Windows), and `~/.pytr/credentials.enc` and
+`~/.pytr/cookies.<hash>.enc` hold AES-256-GCM ciphertext under that key, readable by your user only.
+
+- Without a usable keyring (e.g. a headless server) nothing is stored and you log in every time. There is no
+  plain text fallback on purpose: the session cookies alone are as good as a completed 2FA login.
+- Files from older versions (`~/.pytr/credentials`, `~/.pytr/cookies.<phone>.txt`) are encrypted and removed the
+  first time they are read.
+- To forget everything, delete `~/.pytr/credentials.enc` and `~/.pytr/cookies.*.enc`, and remove the `pytr` /
+  `storage-key` entry from your keyring.
+- This protects against stolen disks, backups and other users. It does not protect against malware running as your
+  user, which can ask the unlocked keyring for the key just like pytr does.
+
+Logs redact the phone number, tokens, cookies and the login process id. Websocket traffic (portfolio,
+transactions, personal data) is only written to the debug log when `PYTR_LOG_PAYLOADS=1` is set; check a debug log
+before you share it anyway.
 
 ### If web login suddenly stops working
 
@@ -169,11 +191,21 @@ Clone the repository:
  git clone https://github.com/pytr-org/pytr.git
 ```
 
-Install dependencies:
+Install dependencies exactly as pinned (with hashes) in `uv.lock`:
 
 ```sh
- uv sync
+ uv sync --locked
 ```
+
+To install pytr itself with the same pins outside of a development checkout:
+
+```sh
+ uv export --locked --no-dev --no-emit-project --format requirements-txt > requirements.txt
+ pip install --require-hashes -r requirements.txt
+ pip install --no-deps .
+```
+
+Dependency updates come in through Renovate, which waits 7 days after a release before proposing it.
 
 Run the tests to ensure everything is set up correctly:
 
