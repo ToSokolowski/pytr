@@ -13,15 +13,9 @@ class Details:
         recv = 0
         await self.tr.stock_details(self.isin)
         await self.tr.news(self.isin)
-        # await self.tr.subscribe_news(self.isin)
         await self.tr.ticker(self.isin, exchange="LSX")
         await self.tr.performance(self.isin, exchange="LSX")
         await self.tr.instrument_details(self.isin)
-
-        # await self.tr.add_watchlist(self.isin)
-        # await self.tr.remove_watchlist(self.isin)
-        # await self.tr.savings_plan_parameters(self.isin)
-        # await self.tr.unsubscribe_news(self.isin)
 
         while True:
             _subscription_id, subscription, response = await self.tr.recv()

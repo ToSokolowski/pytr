@@ -88,15 +88,21 @@ class Alarms:
 
             print(f"{isin}: {'; '.join(messages)}")
 
+        # The only writes pytr sends; the API refuses them unless opted in here.
+        previous_allow_price_alarm_writes = self.tr.allow_price_alarm_writes
+        self.tr.allow_price_alarm_writes = True
         action_count = 0
-        for isin in isins:
-            for a in new_alarms[isin]:
-                await self.tr.create_price_alarm(isin, float(a))
-                action_count += 1
+        try:
+            for isin in isins:
+                for a in new_alarms[isin]:
+                    await self.tr.create_price_alarm(isin, float(a))
+                    action_count += 1
 
-            for a in current_alarms[isin]:
-                await self.tr.cancel_price_alarm(current_alarms[isin].get(a))
-                action_count += 1
+                for a in current_alarms[isin]:
+                    await self.tr.cancel_price_alarm(current_alarms[isin].get(a))
+                    action_count += 1
+        finally:
+            self.tr.allow_price_alarm_writes = previous_allow_price_alarm_writes
 
         while action_count > 0:
             await self.tr.recv()

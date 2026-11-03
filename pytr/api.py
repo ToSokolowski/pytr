@@ -109,6 +109,55 @@ ENV_USER_AGENT = "PYTR_TR_USER_AGENT"
 # Seconds after which the web session is refreshed.
 SESSION_REFRESH_INTERVAL = 290
 
+# pytr is read-only: it never places or cancels orders, changes savings plans, moves money
+# or edits the watchlist. `subscribe` only sends websocket messages whose `type` is listed
+# here, so a write cannot go out by accident, from a copied snippet or from a crafted
+# payload (e.g. a replayed event database). This guards against mistakes, not against code
+# that already runs in this process: such code holds the session and can talk to TR itself.
+READ_ONLY_SUBSCRIPTION_TYPES = frozenset(
+    {
+        "accountPairs",
+        "aggregateHistory",
+        "availableCash",
+        "availableCashForPayout",
+        "availableSize",
+        "cash",
+        "compactPortfolioByType",
+        "derivatives",
+        "experience",
+        "instrument",
+        "instrumentSuitability",
+        "messageOfTheDay",
+        "neonCards",
+        "neonNews",
+        "neonSearch",
+        "neonSearchAggregations",
+        "neonSearchSuggestedTags",
+        "neonSearchTags",
+        "newsSubscriptions",
+        "orders",
+        "performance",
+        "portfolio",
+        "portfolioAggregateHistory",
+        "portfolioStatus",
+        "priceAlarms",
+        "priceForOrder",
+        "savingsPlans",
+        "stockDetails",
+        "ticker",
+        "timeline",
+        "timelineActivityLog",
+        "timelineDetail",
+        "timelineDetailV2",
+        "timelineTransactions",
+        "watchlist",
+    }
+)
+
+# The one write pytr keeps: price alarms can't move money or trade, and `set_price_alarms`
+# needs them. They are sent only when `allow_price_alarm_writes` was set on the instance.
+PRICE_ALARM_WRITE_TYPES = frozenset({"createPriceAlarm", "cancelPriceAlarm"})
+
 
 def account_kind(relationship):
     """The kind of account behind an entry of `relationships()`, e.g. `ADULT` or `LEGAL_ENTITY`."""
@@ -168,6 +217,8 @@ class TradeRepublicApi:
         waf_token="default",
     ):
         self.log = get_logger(__name__)
+        # Opt-in for the price alarm writes in PRICE_ALARM_WRITE_TYPES; only `set_price_alarms` sets it.
+        self.allow_price_alarm_writes = False
         self._locale = locale
         self._save_cookies = save_cookies
         self._use_v2_login = use_v2_login
@@ -724,6 +775,11 @@ class TradeRepublicApi:
             return str(subscription_id)
 
     async def subscribe(self, payload):
+        subscription_type = payload.get("type")
+        if subscription_type not in READ_ONLY_SUBSCRIPTION_TYPES and not (
+            subscription_type in PRICE_ALARM_WRITE_TYPES and self.allow_price_alarm_writes
+        ):
+            raise PermissionError(f"pytr is read-only, refusing to send subscription type {subscription_type!r}")
         subscription_id = await self._next_subscription_id()
         ws = await self._get_ws()
         if log_payloads():
@@ -886,12 +942,6 @@ class TradeRepublicApi:
     async def stock_details(self, isin):
         return await self.subscribe({"type": "stockDetails", "id": isin})
 
-    async def add_watchlist(self, isin):
-        return await self.subscribe({"type": "addToWatchlist", "instrumentId": isin})
-
-    async def remove_watchlist(self, isin):
-        return await self.subscribe({"type": "removeFromWatchlist", "instrumentId": isin})
-
     async def ticker(self, isin, exchange="LSX"):
         return await self.subscribe({"type": "ticker", "id": f"{isin}.{exchange}"})
 
@@ -1012,161 +1062,8 @@ class TradeRepublicApi:
             }
         )
 
-    async def limit_order(
-        self,
-        isin,
-        exchange,
-        order_type,
-        size,
-        limit,
-        expiry,
-        expiry_date=None,
-        warnings_shown=None,
-    ):
-        parameters = {
-            "type": "simpleCreateOrder",
-            "clientProcessId": str(uuid.uuid4()),
-            "warningsShown": warnings_shown if warnings_shown else [],
-            "parameters": {
-                "instrumentId": isin,
-                "exchangeId": exchange,
-                "expiry": {"type": expiry},
-                "limit": limit,
-                "mode": "limit",
-                "size": size,
-                "type": order_type,
-            },
-        }
-        if expiry == "gtd" and expiry_date:
-            parameters["parameters"]["expiry"]["value"] = expiry_date
-
-        return await self.subscribe(parameters)
-
-    async def market_order(
-        self,
-        isin,
-        exchange,
-        order_type,
-        size,
-        expiry,
-        sell_fractions,
-        expiry_date=None,
-        warnings_shown=None,
-    ):
-        parameters = {
-            "type": "simpleCreateOrder",
-            "clientProcessId": str(uuid.uuid4()),
-            "warningsShown": warnings_shown if warnings_shown else [],
-            "parameters": {
-                "instrumentId": isin,
-                "exchangeId": exchange,
-                "expiry": {"type": expiry},
-                "mode": "market",
-                "sellFractions": sell_fractions,
-                "size": size,
-                "type": order_type,
-            },
-        }
-        if expiry == "gtd" and expiry_date:
-            parameters["parameters"]["expiry"]["value"] = expiry_date
-
-        return await self.subscribe(parameters)
-
-    async def stop_market_order(
-        self,
-        isin,
-        exchange,
-        order_type,
-        size,
-        stop,
-        expiry,
-        expiry_date=None,
-        warnings_shown=None,
-    ):
-        parameters = {
-            "type": "simpleCreateOrder",
-            "clientProcessId": str(uuid.uuid4()),
-            "warningsShown": warnings_shown if warnings_shown else [],
-            "parameters": {
-                "instrumentId": isin,
-                "exchangeId": exchange,
-                "expiry": {"type": expiry},
-                "mode": "stopMarket",
-                "size": size,
-                "stop": stop,
-                "type": order_type,
-            },
-        }
-        if expiry == "gtd" and expiry_date:
-            parameters["parameters"]["expiry"]["value"] = expiry_date
-
-        return await self.subscribe(parameters)
-
-    async def cancel_order(self, order_id):
-        return await self.subscribe({"type": "cancelOrder", "orderId": order_id})
-
     async def savings_plan_overview(self):
         return await self.subscribe({"type": "savingsPlans"})
-
-    async def savings_plan_parameters(self, isin):
-        return await self.subscribe({"type": "cancelSavingsPlan", "instrumentId": isin})
-
-    async def create_savings_plan(
-        self,
-        isin,
-        amount,
-        interval,
-        start_date,
-        start_date_type,
-        start_date_value,
-        warnings_shown=None,
-    ):
-        parameters = {
-            "type": "createSavingsPlan",
-            "warningsShown": warnings_shown if warnings_shown else [],
-            "parameters": {
-                "amount": amount,
-                "instrumentId": isin,
-                "interval": interval,
-                "startDate": {
-                    "nextExecutionDate": start_date,
-                    "type": start_date_type,
-                    "value": start_date_value,
-                },
-            },
-        }
-        return await self.subscribe(parameters)
-
-    async def change_savings_plan(
-        self,
-        savings_plan_id,
-        isin,
-        amount,
-        interval,
-        start_date,
-        start_date_type,
-        start_date_value,
-        warnings_shown=None,
-    ):
-        parameters = {
-            "id": savings_plan_id,
-            "type": "changeSavingsPlan",
-            "warningsShown": warnings_shown if warnings_shown else [],
-            "parameters": {
-                "amount": amount,
-                "instrumentId": isin,
-                "interval": interval,
-                "startDate": {
-                    "nextExecutionDate": start_date,
-                    "type": start_date_type,
-                    "value": start_date_value,
-                },
-            },
-        }
-        return await self.subscribe(parameters)
-
-    async def cancel_savings_plan(self, savings_plan_id):
-        return await self.subscribe({"type": "cancelSavingsPlan", "id": savings_plan_id})
 
     async def price_alarm_overview(self):
         return await self.subscribe({"type": "priceAlarms"})
@@ -1182,31 +1079,6 @@ class TradeRepublicApi:
 
     async def news_subscriptions(self):
         return await self.subscribe({"type": "newsSubscriptions"})
-
-    async def subscribe_news(self, isin):
-        return await self.subscribe({"type": "subscribeNews", "instrumentId": isin})
-
-    async def unsubscribe_news(self, isin):
-        return await self.subscribe({"type": "unsubscribeNews", "instrumentId": isin})
-
-    def payout(self, amount):
-        return requests.request(
-            method="POST",
-            url=f"{self._host}/api/v1/payout",
-            data={"amount": amount},
-            headers=self._default_headers,
-        ).json()
-
-    def confirm_payout(self, process_id, code):
-        r = requests.request(
-            method="POST",
-            url=f"{self._host}/api/v1/payout/{process_id}/code",
-            data={"code": code},
-            headers=self._default_headers,
-        )
-
-        if r.status_code != 200:
-            raise ValueError(f"Payout failed with response {r.text!r}")
 
     def settings(self):
         r = self._web_request("/api/v2/auth/account")
