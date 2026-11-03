@@ -239,7 +239,8 @@ checks and type checks.
 1. Create a pull request that bumps the version number in `pyproject.toml`
 2. After successfully merging the PR, [create a new release](https://github.com/pytr-org/pytr/releases/new) via GitHub
    and make use of the "Generate release notes" button. Tags are formatted as `vX.Y.Z`.
-3. The package will be published to PyPI from CI.
+3. Upstream publishes the package to PyPI from CI. This fork has no publish job; install it from a commit with
+   `pip install git+https://github.com/ToSokolowski/pytr@<commit-sha>`.
 
 ### Keep the readme updated
 
